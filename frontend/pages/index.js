@@ -227,7 +227,7 @@ export default function AboutChallengers() {
 
                 {/* Badge on top right */}
                 <span className="absolute top-3 right-3 px-2.5 py-1 bg-gradient-to-b from-yellow-400 to-orange-400 text-white text-xs font-bold rounded-full shadow-lg">
-                  Coming Soon!
+                  Under Development
                 </span>
               </div>
             </div>
