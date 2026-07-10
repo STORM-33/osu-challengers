@@ -34,6 +34,10 @@ export default function AdminScheduledChallenges() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Retry confirmation (failed schedules)
+  const [retryConfirm, setRetryConfirm] = useState(null);
+  const [retryingId, setRetryingId] = useState(null);
+
   // Load schedules
   const loadSchedules = useCallback(async () => {
     setLoading(true);
@@ -143,6 +147,47 @@ export default function AdminScheduledChallenges() {
       });
     } finally {
       setDeleting(false);
+    }
+  };
+
+  // Retry a failed schedule — recreates the room on osu! immediately
+  const handleRetry = async (schedule) => {
+    if (!retryConfirm || retryConfirm.id !== schedule.id) {
+      setRetryConfirm(schedule);
+      return;
+    }
+
+    setRetryConfirm(null);
+    setRetryingId(schedule.id);
+
+    try {
+      const response = await fetch('/api/admin/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ id: schedule.id })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        const roomId = data.data?.room_id || data.room_id;
+        setResult({
+          success: true,
+          message: `Room created successfully!${roomId ? ` Room #${roomId}` : ''}`
+        });
+      } else {
+        throw new Error(data.error || 'Retry failed');
+      }
+    } catch (error) {
+      console.error('Error retrying schedule:', error);
+      setResult({
+        success: false,
+        error: `Retry failed: ${error.message}`
+      });
+    } finally {
+      setRetryingId(null);
+      loadSchedules(); // reflect new status / error message either way
     }
   };
 
@@ -510,6 +555,24 @@ export default function AdminScheduledChallenges() {
                                 </button>
                               </>
                             )}
+                            {schedule.status === 'failed' && (
+                              <button
+                                onClick={() => handleRetry(schedule)}
+                                className={`p-2 rounded-md transition-colors ${
+                                  retryConfirm?.id === schedule.id
+                                    ? 'bg-green-500 text-white hover:bg-green-600'
+                                    : 'text-green-600 hover:text-green-700 hover:bg-green-50'
+                                }`}
+                                title={retryConfirm?.id === schedule.id ? 'Click again to recreate the room now' : 'Retry — recreate this room now'}
+                                disabled={retryingId !== null}
+                              >
+                                {retryingId === schedule.id ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <RotateCcw className="w-4 h-4" />
+                                )}
+                              </button>
+                            )}
                             {schedule.created_room_id && (
                               <Link href={`/challenges/${schedule.created_room_id}`}>
                                 <button
@@ -680,6 +743,28 @@ export default function AdminScheduledChallenges() {
             >
               <X className="w-4 h-4" />
             </button>
+          </div>
+        )}
+
+        {/* Retry Confirmation Toast */}
+        {retryConfirm && (
+          <div className="fixed bottom-4 right-4 bg-green-600 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 z-40">
+            <AlertCircle className="w-5 h-5" />
+            <span>Click retry again to recreate &quot;{retryConfirm.room_data?.name || 'this room'}&quot; on osu! now</span>
+            <button
+              onClick={() => setRetryConfirm(null)}
+              className="text-green-200 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Retry In Progress Toast */}
+        {retryingId && (
+          <div className="fixed bottom-4 right-4 bg-blue-600 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 z-40">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            <span>Creating room... this can take up to a minute</span>
           </div>
         )}
         </div>

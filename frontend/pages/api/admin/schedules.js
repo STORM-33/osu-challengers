@@ -1,6 +1,13 @@
 import { supabaseAdmin } from '../../../lib/supabase-admin';
 import { withAdminAuth } from '../../../lib/auth-middleware';
+import { processSchedule } from '../../../lib/schedule-processor';
 import { validateRequest, handleAPIError, handleAPIResponse } from '../../../lib/api-utils';
+
+// Retrying a failed schedule (POST) creates the room synchronously:
+// up to 3 osu! API attempts with backoff, plus tracker init
+export const config = {
+  maxDuration: 60
+};
 
 /**
  * Admin API for viewing and managing scheduled challenges
@@ -15,6 +22,8 @@ async function handler(req, res) {
   switch (req.method) {
     case 'GET':
       return withAdminAuth(handleList)(req, res);
+    case 'POST':
+      return withAdminAuth(handleRetry)(req, res);
     case 'PATCH':
       return withAdminAuth(handleUpdate)(req, res);
     case 'DELETE':
@@ -115,6 +124,124 @@ async function handleList(req, res) {
 
   } catch (error) {
     console.error('🚨 Admin list schedules error:', error);
+    return handleAPIError(res, error);
+  }
+}
+
+/**
+ * POST - Retry a failed scheduled challenge (recreates the room immediately)
+ * Runs the same pipeline as the cron, using the original owner's stored token.
+ * Any admin can trigger it, matching this page's edit/cancel permissions.
+ */
+async function handleRetry(req, res) {
+  console.log('Admin retrying scheduled challenge');
+
+  try {
+    validateRequest(req, {
+      method: 'POST',
+      body: {
+        id: { required: true, type: 'number' }
+      }
+    });
+
+    const { id } = req.body;
+
+    // Fetch the full row — processSchedule needs everything
+    const { data: schedule, error: fetchError } = await supabaseAdmin
+      .from('scheduled_challenges')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !schedule) {
+      return res.status(404).json({
+        success: false,
+        error: 'Schedule not found'
+      });
+    }
+
+    if (schedule.status !== 'failed') {
+      return res.status(400).json({
+        success: false,
+        error: `Only failed schedules can be retried (status: '${schedule.status}')`
+      });
+    }
+
+    // If the room had an absolute end time that already passed, osu! would
+    // reject the room — fail early with a readable message instead
+    const endsAt = schedule.room_data?.ends_at;
+    if (endsAt && new Date(endsAt) <= new Date()) {
+      return res.status(400).json({
+        success: false,
+        error: `This room's end time (${new Date(endsAt).toLocaleString('en-US', { timeZone: 'UTC' })} UTC) has already passed. Schedule a new challenge instead.`,
+        code: 'ENDS_AT_PASSED'
+      });
+    }
+
+    // Atomically flip failed -> pending so concurrent retries can't both run
+    // (processSchedule only proceeds on status 'pending')
+    const { data: claimed, error: claimError } = await supabaseAdmin
+      .from('scheduled_challenges')
+      .update({
+        status: 'pending',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .eq('status', 'failed')
+      .select('*')
+      .single();
+
+    if (claimError || !claimed) {
+      return res.status(409).json({
+        success: false,
+        error: 'Schedule is already being retried'
+      });
+    }
+
+    console.log(`🔁 Admin ${req.user.username} retrying schedule #${id} (owner osu_id ${claimed.osu_id}, retry_count ${claimed.retry_count})`);
+
+    // Prefer the stored token over the schedule's embedded one: the embedded
+    // token is from scheduling time and its session has usually been revoked
+    // by the owner's next osu! login (that's typically why the schedule
+    // failed). The stored token is refreshed at the owner's latest scheduler
+    // login, so it's the freshest credential available.
+    let scheduleToRun = claimed;
+    if (claimed.encrypted_token) {
+      const { data: storedToken } = await supabaseAdmin
+        .from('user_osu_tokens')
+        .select('id')
+        .eq('osu_id', claimed.osu_id)
+        .maybeSingle();
+
+      if (storedToken) {
+        console.log('    Using stored token instead of embedded token for retry');
+        scheduleToRun = { ...claimed, encrypted_token: null };
+      }
+    }
+
+    const result = await processSchedule(scheduleToRun);
+
+    if (!result.success) {
+      // processSchedule already marked the row failed with the fresh error
+      console.log(`❌ Retry of schedule #${id} failed:`, result.error);
+      return res.status(502).json({
+        success: false,
+        error: result.details || result.error || 'Retry failed',
+        result
+      });
+    }
+
+    console.log(`✅ Retry of schedule #${id} succeeded: room ${result.roomId}`);
+
+    return handleAPIResponse(res, {
+      message: 'Schedule retried successfully',
+      room_id: result.roomId,
+      room_url: `https://osu.ppy.sh/multiplayer/rooms/${result.roomId}`,
+      result
+    }, { cache: false });
+
+  } catch (error) {
+    console.error('🚨 Admin retry schedule error:', error);
     return handleAPIError(res, error);
   }
 }
