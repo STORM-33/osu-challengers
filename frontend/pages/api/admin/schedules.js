@@ -200,26 +200,9 @@ async function handleRetry(req, res) {
 
     console.log(`🔁 Admin ${req.user.username} retrying schedule #${id} (owner osu_id ${claimed.osu_id}, retry_count ${claimed.retry_count})`);
 
-    // Prefer the stored token over the schedule's embedded one: the embedded
-    // token is from scheduling time and its session has usually been revoked
-    // by the owner's next osu! login (that's typically why the schedule
-    // failed). The stored token is refreshed at the owner's latest scheduler
-    // login, so it's the freshest credential available.
-    let scheduleToRun = claimed;
-    if (claimed.encrypted_token) {
-      const { data: storedToken } = await supabaseAdmin
-        .from('user_osu_tokens')
-        .select('id')
-        .eq('osu_id', claimed.osu_id)
-        .maybeSingle();
-
-      if (storedToken) {
-        console.log('    Using stored token instead of embedded token for retry');
-        scheduleToRun = { ...claimed, encrypted_token: null };
-      }
-    }
-
-    const result = await processSchedule(scheduleToRun);
+    // Token preference (stored first, embedded fallback) is handled inside
+    // processSchedule
+    const result = await processSchedule(claimed);
 
     if (!result.success) {
       // processSchedule already marked the row failed with the fresh error

@@ -36,136 +36,134 @@ export async function processSchedule(schedule) {
       };
     }
 
-    // Step 1: Get user's token (NEW WORKFLOW vs LEGACY)
-    console.log('🔐 Step 1: Retrieving user token...');
+    // Steps 1+2: Resolve a usable access token.
+    // Stored token first: it's the exclusively-owned chain (rotated on store,
+    // kept alive by login checks and cron refreshes), so it survives long
+    // lead times. The token embedded in the schedule is the fallback: fresh
+    // at scheduling time, but its chain usually gets consumed by the
+    // scheduler site's own cookie re-login within days.
+    console.log('🔐 Step 1: Resolving user token (stored first, embedded fallback)...');
 
-    let tokenString;
-    let tokenSource;
+    const candidates = [];
 
-    // Check if schedule has embedded encrypted token (legacy)
+    const { data: userToken } = await supabaseAdmin
+      .from('user_osu_tokens')
+      .select('encrypted_token')
+      .eq('osu_id', schedule.osu_id)
+      .maybeSingle();
+
+    if (userToken?.encrypted_token) {
+      candidates.push({ source: 'stored', encrypted: userToken.encrypted_token });
+    }
     if (schedule.encrypted_token) {
-      console.log('    Using legacy embedded token');
-      tokenString = decryptToken(schedule.encrypted_token);
-      tokenSource = 'embedded';
-    } else {
-      // NEW: Fetch from user_osu_tokens table
-      console.log(`    Fetching stored token for osu_id: ${schedule.osu_id}`);
-
-      const { data: userToken, error: tokenError } = await supabaseAdmin
-        .from('user_osu_tokens')
-        .select('encrypted_token')
-        .eq('osu_id', schedule.osu_id)
-        .single();
-
-      if (tokenError || !userToken) {
-        console.error('❌ No stored token found for user');
-
-        await supabaseAdmin
-          .from('scheduled_challenges')
-          .update({
-            status: 'failed',
-            error_message: 'No stored token found for user. User must set token via POST /api/admin/user-token',
-            executed_at: new Date().toISOString()
-          })
-          .eq('id', scheduleId);
-
-        return {
-          success: false,
-          scheduleId,
-          error: 'No stored token found'
-        };
-      }
-
-      tokenString = decryptToken(userToken.encrypted_token);
-      tokenSource = 'stored';
-      console.log('✅ Retrieved stored token');
+      candidates.push({ source: 'embedded', encrypted: schedule.encrypted_token });
     }
 
-    const { accessToken: originalAccessToken, refreshToken, expiresAt } = parseToken(tokenString);
+    if (candidates.length === 0) {
+      console.error('❌ No stored token found for user');
 
-    console.log(`    Token source: ${tokenSource}`);
-    console.log(`    Token expires: ${expiresAt.toISOString()}`);
-    console.log(`    Token masked: ${maskToken(tokenString)}`);
+      await supabaseAdmin
+        .from('scheduled_challenges')
+        .update({
+          status: 'failed',
+          error_message: 'No stored token found for user. User must set token via POST /api/admin/user-token',
+          executed_at: new Date().toISOString()
+        })
+        .eq('id', scheduleId);
 
-    let accessToken = originalAccessToken;
-    let newRefreshToken = refreshToken;
+      return {
+        success: false,
+        scheduleId,
+        error: 'No stored token found'
+      };
+    }
+
+    let accessToken = null;
+    let tokenSource = null;
     let tokenRefreshed = false;
     let tokenPersistFailed = false;
+    const tokenErrors = [];
 
-    // Step 2: Refresh token if needed
-    if (isTokenExpired(tokenString, 300)) { // 5 min buffer
-      console.log('🔄 Token expired or expiring soon, refreshing...');
-
+    for (const candidate of candidates) {
       try {
-        const newTokens = await osuAPI.refreshUserToken(refreshToken);
-        accessToken = newTokens.access_token;
-        newRefreshToken = newTokens.refresh_token;
-        tokenRefreshed = true;
+        const tokenString = decryptToken(candidate.encrypted);
+        const { accessToken: candidateAccess, refreshToken } = parseToken(tokenString);
 
-        // Calculate new expiry (convert seconds to timestamp)
-        const newExpiresAt = Math.floor(Date.now() / 1000) + newTokens.expires_in;
-        const newTokenString = createTokenString(accessToken, newExpiresAt, newRefreshToken);
-        const newEncryptedToken = encryptToken(newTokenString);
+        console.log(`    Trying ${candidate.source} token: ${maskToken(tokenString)}`);
 
-        // Update token in appropriate location.
-        // If this write fails, the room still gets created with the fresh
-        // access token, but the stored refresh token is now burned (osu!
-        // already rotated it) — surface that instead of failing silently,
-        // otherwise the NEXT schedule 401s with no visible cause.
-        if (tokenSource === 'embedded') {
-          // Legacy: update in scheduled_challenges table
-          const { error: persistError } = await supabaseAdmin
-            .from('scheduled_challenges')
-            .update({ encrypted_token: newEncryptedToken })
-            .eq('id', scheduleId);
-
-          if (persistError) {
-            console.error('🚨 Failed to persist rotated token (legacy):', persistError);
-            tokenPersistFailed = true;
-          } else {
-            console.log('✅ Token refreshed and updated in schedule (legacy)');
-          }
-        } else {
-          // NEW: update in user_osu_tokens table
-          const { error: persistError } = await supabaseAdmin
-            .from('user_osu_tokens')
-            .update({
-              encrypted_token: newEncryptedToken,
-              updated_at: new Date().toISOString()
-            })
-            .eq('osu_id', schedule.osu_id);
-
-          if (persistError) {
-            console.error('🚨 Failed to persist rotated token:', persistError);
-            tokenPersistFailed = true;
-          } else {
-            console.log('✅ Token refreshed and updated in user token storage');
-          }
+        if (!isTokenExpired(tokenString, 300)) { // 5 min buffer
+          console.log(`✅ ${candidate.source} access token still valid`);
+          accessToken = candidateAccess;
+          tokenSource = candidate.source;
+          break;
         }
 
-      } catch (refreshError) {
-        console.error('❌ Token refresh failed:', refreshError.message);
+        console.log(`🔄 ${candidate.source} token expired, refreshing...`);
+        const newTokens = await osuAPI.refreshUserToken(refreshToken);
 
-        await supabaseAdmin
-          .from('scheduled_challenges')
-          .update({
-            status: 'failed',
-            error_message: `Token refresh failed: ${refreshError.message}`,
-            retry_count: schedule.retry_count + 1,
-            executed_at: new Date().toISOString()
-          })
-          .eq('id', scheduleId);
+        const newExpiresAt = Math.floor(Date.now() / 1000) + newTokens.expires_in;
+        const newTokenString = createTokenString(newTokens.access_token, newExpiresAt, newTokens.refresh_token);
+        const newEncryptedToken = encryptToken(newTokenString);
 
-        return {
-          success: false,
-          scheduleId,
-          error: 'Token refresh failed',
-          details: refreshError.message
-        };
+        // Persist the rotation back to where the token lives. If this write
+        // fails, the room still gets created with the fresh access token,
+        // but the old refresh token is burned (osu! already rotated it) —
+        // surface that instead of failing silently, otherwise the NEXT
+        // schedule 401s with no visible cause.
+        const { error: persistError } = candidate.source === 'embedded'
+          ? await supabaseAdmin
+              .from('scheduled_challenges')
+              .update({ encrypted_token: newEncryptedToken })
+              .eq('id', scheduleId)
+          : await supabaseAdmin
+              .from('user_osu_tokens')
+              .update({
+                encrypted_token: newEncryptedToken,
+                updated_at: new Date().toISOString()
+              })
+              .eq('osu_id', schedule.osu_id);
+
+        if (persistError) {
+          console.error(`🚨 Failed to persist rotated ${candidate.source} token:`, persistError);
+          tokenPersistFailed = true;
+        } else {
+          console.log(`✅ ${candidate.source} token refreshed and persisted`);
+        }
+
+        accessToken = newTokens.access_token;
+        tokenSource = candidate.source;
+        tokenRefreshed = true;
+        break;
+
+      } catch (tokenError) {
+        console.error(`❌ ${candidate.source} token unusable:`, tokenError.message);
+        tokenErrors.push(`${candidate.source}: ${tokenError.message}`);
       }
-    } else {
-      console.log('✅ Token is still valid');
     }
+
+    if (!accessToken) {
+      const details = tokenErrors.join('; ');
+      console.error('❌ All token candidates failed:', details);
+
+      await supabaseAdmin
+        .from('scheduled_challenges')
+        .update({
+          status: 'failed',
+          error_message: `Token refresh failed: ${details}`,
+          retry_count: schedule.retry_count + 1,
+          executed_at: new Date().toISOString()
+        })
+        .eq('id', scheduleId);
+
+      return {
+        success: false,
+        scheduleId,
+        error: 'Token refresh failed',
+        details
+      };
+    }
+
+    console.log(`    Using ${tokenSource} token${tokenRefreshed ? ' (refreshed)' : ''}`);
 
     // Step 3: Verify user is still admin
     console.log('👤 Step 3: Verifying admin status...');

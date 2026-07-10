@@ -155,9 +155,44 @@ async function handleSetToken(req, res) {
       });
     }
 
+    // Step 3.5: Take exclusive ownership of the token chain by rotating it.
+    // Whoever holds the newest rotation owns the chain — after this refresh,
+    // the scheduler site's cookie copy (same chain) goes stale and can no
+    // longer consume our refresh token, so the stored chain survives
+    // indefinitely (3-month sliding TTL, extended on every refresh).
+    let finalTokenString = osu_token;
+    let tokenRotated = false;
+
+    try {
+      const { refreshToken } = parseToken(osu_token);
+      const newTokens = await osuAPI.refreshUserToken(refreshToken);
+      const newExpiresAt = Math.floor(Date.now() / 1000) + newTokens.expires_in;
+      finalTokenString = createTokenString(newTokens.access_token, newExpiresAt, newTokens.refresh_token);
+      tokenRotated = true;
+      console.log('✅ Token chain rotated — challengers now owns the newest rotation');
+    } catch (rotateError) {
+      const statusMatch = rotateError.message?.match(/:\s*(\d{3})$/);
+      const httpStatus = statusMatch ? parseInt(statusMatch[1]) : null;
+
+      if (httpStatus === 400 || httpStatus === 401) {
+        // The refresh token was already consumed elsewhere — this copy of the
+        // chain is doomed (dies within 24h). Better to reject than store it.
+        console.log('❌ Submitted token chain already used elsewhere');
+        return res.status(400).json({
+          success: false,
+          error: 'This token has already been used elsewhere. Please log in again and submit a freshly obtained token.',
+          code: 'TOKEN_CHAIN_CONSUMED'
+        });
+      }
+
+      // Transient (network/5xx): store as-is; the login check's validation
+      // will rotate and take ownership on the next opportunity
+      console.warn('⚠️ Ownership rotation failed transiently, storing token as-is:', rotateError.message);
+    }
+
     // Step 4: Encrypt and store token
     console.log('🔐 Encrypting token...');
-    const encrypted_token = encryptToken(osu_token);
+    const encrypted_token = encryptToken(finalTokenString);
 
     // Upsert (insert or update)
     const { data: tokenRecord, error: upsertError } = await supabaseAdmin
@@ -184,6 +219,7 @@ async function handleSetToken(req, res) {
 
     return handleAPIResponse(res, {
       message: 'Token set successfully',
+      token_rotated: tokenRotated,
       user: {
         osu_id: user.osu_id,
         username: user.username
