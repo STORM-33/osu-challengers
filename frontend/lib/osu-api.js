@@ -237,18 +237,22 @@ class OsuAPI {
    */
   async refreshUserToken(refreshToken) {
     console.log('🔄 Refreshing user token...');
-    
+
+    // Scheduler tokens are osu!lazer session tokens, issued to the official
+    // lazer client (client_id 5) — a refresh MUST use the same client the
+    // token was issued to; refreshing with our own web app's OSU_CLIENT_ID
+    // gets rejected with 401 every time. The lazer credentials are public
+    // constants from the open-source client (same ones the scheduler uses).
     const response = await fetch('https://osu.ppy.sh/oauth/token', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        client_id: process.env.OSU_CLIENT_ID,
-        client_secret: process.env.OSU_CLIENT_SECRET,
+        client_id: parseInt(process.env.OSU_LAZER_CLIENT_ID || '5', 10),
+        client_secret: process.env.OSU_LAZER_CLIENT_SECRET || 'FGc9GAtyHzeQDshWP5Ah7dega8hJACAJpQtw6OXk',
         grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        scope: '*'
+        refresh_token: refreshToken
       })
     });
 

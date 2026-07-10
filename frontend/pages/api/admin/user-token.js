@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../../../lib/supabase-admin';
 import { validateRequest, handleAPIError, handleAPIResponse } from '../../../lib/api-utils';
-import { encryptToken, maskToken, parseToken, isTokenExpired } from '../../../lib/token-encryption';
+import { encryptToken, decryptToken, maskToken, parseToken, isTokenExpired, createTokenString } from '../../../lib/token-encryption';
 import { osuAPI } from '../../../lib/osu-api';
 
 const SCHEDULER_SECRET = process.env.SCHEDULER_SHARED_SECRET;
@@ -240,28 +240,130 @@ async function handleGetTokenStatus(req, res) {
     // Check if token exists
     const { data: tokenRecord, error: tokenError } = await supabaseAdmin
       .from('user_osu_tokens')
-      .select('id, created_at, updated_at')
+      .select('id, encrypted_token, created_at, updated_at')
       .eq('osu_id', parsedOsuId)
       .single();
 
-    const hasToken = !tokenError && !!tokenRecord;
+    let hasToken = !tokenError && !!tokenRecord;
 
-    console.log(`Token status for ${user.username}: ${hasToken ? 'HAS TOKEN' : 'NO TOKEN'}`);
+    // Validate the stored token instead of just reporting row existence.
+    // A dead token would otherwise read as "has token" forever, and the
+    // scheduler UI would never offer to store a fresh one — leaving the
+    // user's schedules failing with refresh 401s with no way to recover.
+    let tokenStatus = hasToken ? 'valid' : 'none';
+    let tokenSetAt = hasToken ? tokenRecord.updated_at : null;
+
+    if (hasToken) {
+      const validation = await validateStoredToken(parsedOsuId, tokenRecord.encrypted_token);
+      tokenStatus = validation.status;
+
+      if (validation.status === 'dead') {
+        // Refresh token is burned (revoked by a newer osu! login, or expired).
+        // Remove the row so the scheduler prompts the user to store a fresh token.
+        console.log(`🗑️ Removing dead token for ${user.username}`);
+        // Conditional on updated_at: if a concurrent check just rotated the
+        // token, don't delete the fresh row our stale refresh 401'd against
+        await supabaseAdmin
+          .from('user_osu_tokens')
+          .delete()
+          .eq('osu_id', parsedOsuId)
+          .eq('updated_at', tokenRecord.updated_at);
+
+        hasToken = false;
+        tokenSetAt = null;
+      } else if (validation.status === 'refreshed') {
+        tokenSetAt = validation.updatedAt;
+      }
+      // 'valid' and 'unverified' (transient refresh error) keep the token
+    }
+
+    console.log(`Token status for ${user.username}: ${hasToken ? 'HAS TOKEN' : 'NO TOKEN'} (${tokenStatus})`);
 
     return handleAPIResponse(res, {
       has_token: hasToken,
+      token_status: tokenStatus,
       user: {
         osu_id: user.osu_id,
         username: user.username,
         admin: user.admin
       },
-      token_set_at: hasToken ? tokenRecord.updated_at : null,
+      token_set_at: tokenSetAt,
       token_created_at: hasToken ? tokenRecord.created_at : null
     }, { cache: false });
 
   } catch (error) {
     console.error('🚨 Get token status error:', error);
     return handleAPIError(res, error);
+  }
+}
+
+/**
+ * Validate a stored token, refreshing it if the access token has expired.
+ *
+ * Returns { status, updatedAt? } where status is:
+ *   'valid'      - access token still usable as-is
+ *   'refreshed'  - was expired, refresh succeeded, rotated token stored
+ *   'dead'       - refresh rejected by osu! (burned refresh token) or token unreadable
+ *   'unverified' - expired but refresh failed transiently (network/5xx); kept as-is,
+ *                  the cron will surface the truth at execution time
+ */
+async function validateStoredToken(osuId, encryptedToken) {
+  let tokenString;
+  let refreshToken;
+
+  try {
+    tokenString = decryptToken(encryptedToken);
+    ({ refreshToken } = parseToken(tokenString));
+  } catch (parseError) {
+    console.error('❌ Stored token unreadable:', parseError.message);
+    return { status: 'dead' };
+  }
+
+  // Access token still valid (5 min buffer) — nothing to do
+  if (!isTokenExpired(tokenString, 300)) {
+    return { status: 'valid' };
+  }
+
+  console.log('🔄 Stored access token expired, attempting refresh to validate...');
+
+  try {
+    const newTokens = await osuAPI.refreshUserToken(refreshToken);
+
+    const newExpiresAt = Math.floor(Date.now() / 1000) + newTokens.expires_in;
+    const newTokenString = createTokenString(newTokens.access_token, newExpiresAt, newTokens.refresh_token);
+    const updatedAt = new Date().toISOString();
+
+    const { error: updateError } = await supabaseAdmin
+      .from('user_osu_tokens')
+      .update({
+        encrypted_token: encryptToken(newTokenString),
+        updated_at: updatedAt
+      })
+      .eq('osu_id', osuId);
+
+    if (updateError) {
+      // Rotated token not persisted — the stored one is now burned.
+      // Report dead so the user re-stores rather than silently failing later.
+      console.error('❌ Failed to persist refreshed token:', updateError);
+      return { status: 'dead' };
+    }
+
+    console.log('✅ Stored token refreshed and rotated');
+    return { status: 'refreshed', updatedAt };
+
+  } catch (refreshError) {
+    // osu! rejects burned/invalid refresh tokens with 400/401;
+    // anything else (network, 5xx) is transient — don't delete on those
+    const statusMatch = refreshError.message?.match(/:\s*(\d{3})$/);
+    const httpStatus = statusMatch ? parseInt(statusMatch[1]) : null;
+
+    if (httpStatus === 400 || httpStatus === 401) {
+      console.log(`❌ Refresh token rejected (${httpStatus}) — token is dead`);
+      return { status: 'dead' };
+    }
+
+    console.warn('⚠️ Token refresh failed transiently, keeping stored token:', refreshError.message);
+    return { status: 'unverified' };
   }
 }
 
