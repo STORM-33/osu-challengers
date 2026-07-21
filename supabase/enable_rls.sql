@@ -42,3 +42,11 @@ ALTER FUNCTION public.get_challenge_leaderboard(integer)
 -- 3. Defense-in-depth: revoke write grants from the public roles. RLS already blocks these;
 --    this ensures a future loose policy or accidental RLS-disable can't reopen writes.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM anon, authenticated;
+
+-- 4. These views ran as SECURITY DEFINER (owner privileges), so querying them bypassed the
+--    RLS above — a back door to sync_queue and user_achievements. security_invoker=true makes
+--    them run with the caller's privileges, so RLS on the base tables applies. The app doesn't
+--    query these client-side; server-side runs as service_role, which bypasses RLS regardless.
+ALTER VIEW public.challenge_summary         SET (security_invoker = true);
+ALTER VIEW public.sync_queue_status         SET (security_invoker = true);
+ALTER VIEW public.user_achievements_summary SET (security_invoker = true);
