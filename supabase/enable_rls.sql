@@ -50,3 +50,24 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM anon
 ALTER VIEW public.challenge_summary         SET (security_invoker = true);
 ALTER VIEW public.sync_queue_status         SET (security_invoker = true);
 ALTER VIEW public.user_achievements_summary SET (security_invoker = true);
+
+-- 5. Policy cleanup (clears "multiple permissive policies" + "per-row auth" perf advisories).
+--    Dedupe to one public-read policy per public table; drop the users UPDATE landmine policies
+--    (app updates users via service_role, which bypasses RLS); drop redundant service_role
+--    policies (service_role has BYPASSRLS); lock the internal cache/tracking tables.
+--    No app impact — server-side uses service_role; only client DB call is the DEFINER RPC.
+DROP POLICY IF EXISTS "Allow public read access to challenges"    ON public.challenges;      -- keep "Public challenges are viewable by everyone"
+DROP POLICY IF EXISTS "Service role can manage challenges"        ON public.challenges;
+DROP POLICY IF EXISTS "Public playlists are viewable by everyone" ON public.playlists;       -- keep "Allow public read access to playlists"
+DROP POLICY IF EXISTS "Service role can manage playlists"         ON public.playlists;
+DROP POLICY IF EXISTS "Public scores are viewable by everyone"    ON public.scores;           -- keep "Allow public read access to scores"
+DROP POLICY IF EXISTS "Service role can manage scores"            ON public.scores;
+DROP POLICY IF EXISTS "Service role can manage user_challenges"   ON public.user_challenges;  -- keep "Allow public read access to user_challenges"
+DROP POLICY IF EXISTS "Users can view all user profiles"          ON public.users;            -- keep "Allow public read access to user profiles"
+DROP POLICY IF EXISTS "Authenticated users can view profiles"     ON public.users;
+DROP POLICY IF EXISTS "Service role can manage all users"         ON public.users;
+DROP POLICY IF EXISTS "Users can update own profile"              ON public.users;
+DROP POLICY IF EXISTS "Users can update their own profile"        ON public.users;
+DROP POLICY IF EXISTS "allow_authenticated_upsert"                ON public.users;
+DROP POLICY IF EXISTS "Cache is accessible by service role"       ON public.cache;
+DROP POLICY IF EXISTS "Admin only access"                         ON public.api_tracking_data;
