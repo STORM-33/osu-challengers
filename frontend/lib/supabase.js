@@ -7,7 +7,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Public anon client (used in the browser)
+const anonClient = createClient(supabaseUrl, supabaseAnonKey);
 
 // Import admin client for server-side operations
 let supabaseAdmin = null;
@@ -19,8 +20,13 @@ if (typeof window === 'undefined') {
   } catch (error) {
     console.warn('Could not load admin client:', error.message);
   }
-  console.log('admin loaded')
 }
+
+// Exported client is environment-aware: the service-role client on the server
+// (bypasses RLS), the public anon client in the browser. This means server-side
+// callers never depend on anon table policies, so RLS can lock the anon role out
+// of every table without breaking the app. The browser only ever holds the anon key.
+export const supabase = (typeof window === 'undefined' && supabaseAdmin) ? supabaseAdmin : anonClient;
 
 // Helper functions for common queries
 export const challengeQueries = {

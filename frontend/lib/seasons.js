@@ -1,5 +1,7 @@
 // frontend/lib/seasons.js
-import { supabase } from './supabase';
+// Server-only module (imported by API routes). Uses the service-role client so it
+// works under RLS without granting the anon role any access to the seasons table.
+import { supabaseAdmin } from './supabase-admin';
 
 // Season utility functions
 export const seasonUtils = {
@@ -16,8 +18,8 @@ export const seasonUtils = {
   // Generate season name based on current date (6-month seasons)
   generateSeasonName: async (date = new Date(), supabaseInstance = null) => {
     try {
-      // Use provided instance or default to client supabase
-      const supabaseToUse = supabaseInstance || supabase;
+      // Use provided instance or default to the service-role admin client
+      const supabaseToUse = supabaseInstance || supabaseAdmin;
       
       // Get all existing seasons to determine next number
       const { data: seasons, error } = await supabaseToUse
@@ -84,7 +86,7 @@ export const seasonUtils = {
   // Auto-rotate season if needed (6-month rotation)
   autoRotateSeason: async (supabaseInstance = null) => {
     try {
-      const supabaseToUse = supabaseInstance || supabase;
+      const supabaseToUse = supabaseInstance || supabaseAdmin;
       
       const { data: currentSeason } = await supabaseToUse
         .from('seasons')
@@ -184,7 +186,7 @@ export const seasonUtils = {
   // Get the season that contains a specific date
   getSeasonForDate: async (date) => {
     try {
-      const { data: seasons, error } = await supabase
+      const { data: seasons, error } = await supabaseAdmin
         .from('seasons')
         .select('*')
         .order('start_date', { ascending: false });
@@ -243,7 +245,7 @@ export const seasonUtils = {
   // Get season statistics
   getSeasonStats: async (seasonId) => {
     try {
-      const { data: challenges, error: challengesError } = await supabase
+      const { data: challenges, error: challengesError } = await supabaseAdmin
         .from('challenges')
         .select(`
           id,
@@ -332,7 +334,7 @@ export const seasonUtils = {
       
       const dateRange = seasonUtils.getSeasonDateRange(year, half);
 
-      const { data: season, error } = await supabase
+      const { data: season, error } = await supabaseAdmin
         .from('seasons')
         .insert({
           name: seasonName,
