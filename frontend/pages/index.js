@@ -467,22 +467,28 @@ export default function AboutChallengers() {
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-              <div className="glass-1 rounded-lg sm:rounded-xl p-4 sm:p-6">
+              <div className="glass-1 rounded-lg sm:rounded-xl p-4 sm:p-6 md:col-span-2">
                 <h4 className="font-bold text-white mb-3 flex items-center gap-2 text-shadow-adaptive">
                   <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-white/90 icon-shadow-adaptive-sm" />
                   Mod Challenges
                 </h4>
                 <ul className="space-y-2">
                   <li className="flex items-start gap-2">
-                    <span className="text-white/70 mt-1 text-shadow-adaptive-sm">•</span>
+                    <span className="text-sm sm:text-base text-white/70 text-shadow-adaptive-sm">•</span>
                     <span className="text-sm sm:text-base text-white/80 text-shadow-adaptive-sm">
                       Unless specified in the Playlist description, mod challenges must use default settings
                     </span>
                   </li>
                   <li className="flex items-start gap-2">
-                    <span className="text-white/70 mt-1 text-shadow-adaptive-sm">•</span>
+                    <span className="text-sm sm:text-base text-white/70 text-shadow-adaptive-sm">•</span>
                     <span className="text-sm sm:text-base text-white/80 text-shadow-adaptive-sm">
                       You can add other mods, even ones that change the main mod's difficulty
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-sm sm:text-base text-white/70 text-shadow-adaptive-sm">•</span>
+                    <span className="text-sm sm:text-base text-white/80 text-shadow-adaptive-sm">
+                      Using No Fail with any mods that utilise an instant/sudden death mechanic will render the score ineligible for winning prizes
                     </span>
                   </li>
                 </ul>
@@ -495,13 +501,13 @@ export default function AboutChallengers() {
                 </h4>
                 <ul className="space-y-2">
                   <li className="flex items-start gap-2">
-                    <span className="text-white/70 mt-1 text-shadow-adaptive-sm">•</span>
+                    <span className="text-sm sm:text-base text-white/70 text-shadow-adaptive-sm">•</span>
                     <span className="text-sm sm:text-base text-white/80 text-shadow-adaptive-sm">
                       Your winning score must be publicly visible on the official Playlist leaderboard
                     </span>
                   </li>
                   <li className="flex items-start gap-2">
-                    <span className="text-white/70 mt-1 text-shadow-adaptive-sm">•</span>
+                    <span className="text-sm sm:text-base text-white/70 text-shadow-adaptive-sm">•</span>
                     <span className="text-sm sm:text-base text-white/80 text-shadow-adaptive-sm">
                       Screenshots of non-visible plays won't count
                     </span>
@@ -509,15 +515,19 @@ export default function AboutChallengers() {
                 </ul>
               </div>
 
-              <div className="glass-1 rounded-lg sm:rounded-xl p-4 sm:p-6 md:col-span-2">
+              <div className="glass-1 rounded-lg sm:rounded-xl p-4 sm:p-6">
                 <h4 className="font-bold text-white mb-3 flex items-center gap-2 text-shadow-adaptive">
                   <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-white/90 icon-shadow-adaptive-sm" />
                   Fair Play & Sportsmanship
                 </h4>
-                <p className="text-sm sm:text-base text-white/80 text-shadow-adaptive-sm">
-                  Respect all participants and their achievements. Everyone is trying their best, and that deserves recognition. 
-                  Keep the competition friendly and fun!
-                </p>
+                <ul className="space-y-2">
+                  <li className="flex items-start gap-2">
+                    <span className="text-sm sm:text-base text-white/70 text-shadow-adaptive-sm">•</span>
+                    <span className="text-sm sm:text-base text-white/80 text-shadow-adaptive-sm">
+                      Respect all participants and their achievements. Everyone is trying their best, and that deserves recognition. Keep the competition friendly and fun!
+                    </span>
+                  </li>
+                </ul>
               </div>
             </div>
 
